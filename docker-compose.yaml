@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  backend:
+    image: rag_backend:1.5  # Replace with the actual image name
+    container_name: example-backend
+    restart: unless-stopped
+    tty: true
+    ports:
+      - "8080:8080"  # Adjust as necessary
+    expose:
+      - "8080"
+    volumes:
+      - d:\nut-storage\llm\rag:/mnt
+    command: >
+      sh -c "exec uvicorn main:app --host 0.0.0.0 --port 8080"

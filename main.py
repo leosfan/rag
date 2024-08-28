@@ -1,35 +1,30 @@
 """Main entrypoint for the app."""
 import asyncio
 import os
+os.environ["LANGSMITH_TRACING"] = "false"
 from datetime import datetime
 from operator import itemgetter
 from typing import List, Optional, Sequence, Tuple, Union
 
-import langsmith
 from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from langchain.callbacks.manager import CallbackManagerForRetrieverRun
-from langchain.chat_models import ChatAnthropic, ChatOpenAI, ChatVertexAI
-from langchain.document_loaders import AsyncHtmlLoader
-from langchain.document_transformers import Html2TextTransformer
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+    PromptTemplate
+)
+# from langchain_community.retrievers import TavilySearchAPIRetriever
 from langchain.retrievers import (
     ContextualCompressionRetriever,
     TavilySearchAPIRetriever,
 )
-from langchain.retrievers.document_compressors import (
-    DocumentCompressorPipeline,
-    EmbeddingsFilter,
-)
-from langchain.retrievers.kay import KayAiRetriever
-from langchain.retrievers.you import YouRetriever
-from langchain.schema import Document
+
 from langchain.schema.document import Document
 from langchain.schema.language_model import BaseLanguageModel
 from langchain.schema.messages import AIMessage, HumanMessage
 from langchain.schema.output_parser import StrOutputParser
 from langchain.schema.retriever import BaseRetriever
+
 from langchain.schema.runnable import (
     ConfigurableField,
     Runnable,
@@ -40,11 +35,21 @@ from langchain.schema.runnable import (
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Backup
-from langchain.utilities import GoogleSearchAPIWrapper
 from langserve import add_routes
-from langsmith import Client
 from pydantic import BaseModel, Field
 from uuid import UUID
+
+from langchain_community.chat_models import ChatTongyi
+import yaml
+
+
+script_dir = os.path.dirname(os.path.realpath(__file__))
+# Load the YAML file
+with open(os.path.join(script_dir, 'secrets', 'api_keys.yaml'), 'r') as file:
+    config = yaml.load(file, Loader=yaml.FullLoader)
+os.environ["DASHSCOPE_API_KEY"] = config['DASHSCOPE_API_KEY']
+os.environ["TAVILY_API_KEY"] = config['TAVILY_API_KEY']
+
 
 RESPONSE_TEMPLATE = """\
 You are an expert researcher and writer, tasked with answering any question.
@@ -91,7 +96,6 @@ Follow Up Input: {question}
 Standalone Question:"""
 
 
-client = Client()
 
 app = FastAPI()
 app.add_middleware(
@@ -110,118 +114,6 @@ class ChatRequest(BaseModel):
         ...,
         extra={"widget": {"type": "chat", "input": "question", "output": "answer"}},
     )
-
-
-class GoogleCustomSearchRetriever(BaseRetriever):
-    search: Optional[GoogleSearchAPIWrapper] = None
-    num_search_results = 6
-
-    def clean_search_query(self, query: str) -> str:
-        # Some search tools (e.g., Google) will
-        # fail to return results if query has a
-        # leading digit: 1. "LangCh..."
-        # Check if the first character is a digit
-        if query[0].isdigit():
-            # Find the position of the first quote
-            first_quote_pos = query.find('"')
-            if first_quote_pos != -1:
-                # Extract the part of the string after the quote
-                query = query[first_quote_pos + 1 :]
-                # Remove the trailing quote if present
-                if query.endswith('"'):
-                    query = query[:-1]
-        return query.strip()
-
-    def search_tool(self, query: str, num_search_results: int = 1) -> List[dict]:
-        """Returns num_search_results pages per Google search."""
-        query_clean = self.clean_search_query(query)
-        result = self.search.results(query_clean, num_search_results)
-        return result
-
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
-    ):
-        if os.environ.get("GOOGLE_API_KEY", None) == None:
-            raise Exception("No Google API key provided")
-
-        if self.search == None:
-            self.search = GoogleSearchAPIWrapper()
-
-        # Get search questions
-        print("Generating questions for Google Search ...")
-
-        # Get urls
-        print("Searching for relevant urls...")
-        urls_to_look = []
-        search_results = self.search_tool(query, self.num_search_results)
-        print("Searching for relevant urls...")
-        print(f"Search results: {search_results}")
-        for res in search_results:
-            if res.get("link", None):
-                urls_to_look.append(res["link"])
-
-        print(search_results)
-        loader = AsyncHtmlLoader(urls_to_look)
-        html2text = Html2TextTransformer()
-        print("Indexing new urls...")
-        docs = loader.load()
-        docs = list(html2text.transform_documents(docs))
-        for i in range(len(docs)):
-            if search_results[i].get("title", None):
-                docs[i].metadata["title"] = search_results[i]["title"]
-        return docs
-
-
-def get_retriever():
-    embeddings = OpenAIEmbeddings()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=20)
-    relevance_filter = EmbeddingsFilter(embeddings=embeddings, similarity_threshold=0.8)
-    pipeline_compressor = DocumentCompressorPipeline(
-        transformers=[splitter, relevance_filter]
-    )
-    base_tavily_retriever = TavilySearchAPIRetriever(
-        k=6, include_raw_content=True, include_images=True
-    )
-    tavily_retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor, base_retriever=base_tavily_retriever
-    )
-    base_google_retriever = GoogleCustomSearchRetriever()
-    google_retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor, base_retriever=base_google_retriever
-    )
-    base_you_retriever = YouRetriever(
-        ydc_api_key=os.environ.get("YDC_API_KEY", "not_provided")
-    )
-    you_retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor, base_retriever=base_you_retriever
-    )
-    base_kay_retriever = KayAiRetriever.create(
-        dataset_id="company",
-        data_types=["10-K", "10-Q"],
-        num_contexts=6,
-    )
-    kay_retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor, base_retriever=base_kay_retriever
-    )
-    base_kay_press_release_retriever = KayAiRetriever.create(
-        dataset_id="company",
-        data_types=["PressRelease"],
-        num_contexts=6,
-    )
-    kay_press_release_retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor,
-        base_retriever=base_kay_press_release_retriever,
-    )
-    return tavily_retriever.configurable_alternatives(
-        # This gives this field an id
-        # When configuring the end runnable, we can then use this id to configure this field
-        ConfigurableField(id="retriever"),
-        default_key="tavily",
-        google=google_retriever,
-        you=you_retriever,
-        kay=kay_retriever,
-        kay_press_release=kay_press_release_retriever,
-    ).with_config(run_name="FinalSourceRetriever")
 
 
 def create_retriever_chain(
@@ -312,56 +204,21 @@ def create_chain(
     )
 
 
-dir_path = os.path.dirname(os.path.realpath(__file__))
-
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
-    dir_path + "/" + ".google_vertex_ai_credentials.json"
-)
-
-has_google_creds = os.path.isfile(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
-
-llm = ChatOpenAI(
-    model="gpt-3.5-turbo-16k",
-    # model="gpt-4",
-    streaming=True,
-    temperature=0.1,
-).configurable_alternatives(
-    # This gives this field an id
-    # When configuring the end runnable, we can then use this id to configure this field
-    ConfigurableField(id="llm"),
-    default_key="openai",
-    anthropic=ChatAnthropic(
-        model="claude-2",
-        max_tokens=16384,
-        temperature=0.1,
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "not_provided"),
-    ),
-)
-
-if has_google_creds:
-    llm = ChatOpenAI(
-        model="gpt-3.5-turbo-16k",
-        # model="gpt-4",
-        streaming=True,
-        temperature=0.1,
-    ).configurable_alternatives(
-        # This gives this field an id
-        # When configuring the end runnable, we can then use this id to configure this field
-        ConfigurableField(id="llm"),
-        default_key="openai",
-        anthropic=ChatAnthropic(
-            model="claude-2",
-            max_tokens=16384,
-            temperature=0.1,
-            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "not_provided"),
-        ),
-        googlevertex=ChatVertexAI(
-            model_name="chat-bison-32k",
-            temperature=0.1,
-            max_output_tokens=8192,
-            stream=True,
-        ),
+def get_retriever():
+    base_tavily_retriever = TavilySearchAPIRetriever(
+        k=6, include_raw_content=True, include_images=True
     )
+    return base_tavily_retriever
+
+
+llm = ChatTongyi(
+    temperature=0.1,
+    model_name='qwen-plus',
+    max_retries=10,
+    top_p=0.8,
+    max_tokens=2000,
+    streaming=True,
+)
 
 retriever = get_retriever()
 
@@ -370,83 +227,6 @@ chain = create_chain(llm, retriever)
 add_routes(
     app, chain, path="/chat", input_type=ChatRequest, config_keys=["configurable"]
 )
-
-
-class SendFeedbackBody(BaseModel):
-    run_id: UUID
-    key: str = "user_score"
-
-    score: Union[float, int, bool, None] = None
-    feedback_id: Optional[UUID] = None
-    comment: Optional[str] = None
-
-
-@app.post("/feedback")
-async def send_feedback(body: SendFeedbackBody):
-    client.create_feedback(
-        body.run_id,
-        body.key,
-        score=body.score,
-        comment=body.comment,
-        feedback_id=body.feedback_id,
-    )
-    return {"result": "posted feedback successfully", "code": 200}
-
-
-class UpdateFeedbackBody(BaseModel):
-    feedback_id: UUID
-    score: Union[float, int, bool, None] = None
-    comment: Optional[str] = None
-
-
-@app.patch("/feedback")
-async def update_feedback(body: UpdateFeedbackBody):
-    feedback_id = body.feedback_id
-    if feedback_id is None:
-        return {
-            "result": "No feedback ID provided",
-            "code": 400,
-        }
-    client.update_feedback(
-        feedback_id,
-        score=body.score,
-        comment=body.comment,
-    )
-    return {"result": "patched feedback successfully", "code": 200}
-
-
-# TODO: Update when async API is available
-async def _arun(func, *args, **kwargs):
-    return await asyncio.get_running_loop().run_in_executor(None, func, *args, **kwargs)
-
-
-async def aget_trace_url(run_id: str) -> str:
-    for i in range(5):
-        try:
-            await _arun(client.read_run, run_id)
-            break
-        except langsmith.utils.LangSmithError:
-            await asyncio.sleep(1**i)
-
-    if await _arun(client.run_is_shared, run_id):
-        return await _arun(client.read_run_shared_link, run_id)
-    return await _arun(client.share_run, run_id)
-
-
-class GetTraceBody(BaseModel):
-    run_id: UUID
-
-
-@app.post("/get_trace")
-async def get_trace(body: GetTraceBody):
-    run_id = body.run_id
-    if run_id is None:
-        return {
-            "result": "No LangSmith run ID provided",
-            "code": 400,
-        }
-    return await aget_trace_url(str(run_id))
-
 
 if __name__ == "__main__":
     import uvicorn
