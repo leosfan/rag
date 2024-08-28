@@ -28,7 +28,8 @@ import { ArrowUpIcon } from "@chakra-ui/icons";
 import { Source } from "./SourceBubble";
 import { DefaultQuestion } from "./DefaultQuestion";
 
-type RetrieverName = "tavily" | "kay" | "you" | "google" | "kay_press_release";
+type RetrieverName = "tavily";
+type ModeName = "online" | "local";
 
 export function ChatWindow(props: {
   apiBaseUrl: string;
@@ -45,7 +46,10 @@ export function ChatWindow(props: {
   const [retriever, setRetriever] = useState<RetrieverName>(
     (searchParams.get("retriever") as RetrieverName) ?? "tavily",
   );
-  const [llm, setLlm] = useState(searchParams.get("llm") ?? "openai");
+  const [modename, setMode] = useState<ModeName>(
+    (searchParams.get("mode") as ModeName) ?? "online",
+  );
+  const [llm, setLlm] = useState(searchParams.get("llm") ?? "tongyi");
 
   const [chatHistory, setChatHistory] = useState<[string, string][]>([]);
 
@@ -190,22 +194,6 @@ export function ChatWindow(props: {
 
   const DEFAULT_QUESTIONS: Record<RetrieverName, string[]> = {
     tavily: defaultQuestions,
-    you: defaultQuestions,
-    google: defaultQuestions,
-    kay: [
-      "Is Johnson & Johnson increasing its marketing budget?",
-      "How is Lululemon adapting to new customer trends?",
-      "Which industries are growing in recent 10-Q reports?",
-      "Who are Etsy’s competitors?",
-      "Which companies reported data breaches?",
-      "What were the biggest strategy changes made by Roku in 2023?",
-    ],
-    kay_press_release: [
-      "How is the healthcare industry adopting generative AI tools?",
-      "What were the major technological advancements in the renewable energy sector in 2023?",
-      "What happened to Intel's acquisition of Tower Semiconductor?",
-      "What were the biggest strategy changes made by Roku in 2023?",
-    ],
   };
 
   const sendInitialQuestion = async (question: string) => {
@@ -266,10 +254,6 @@ export function ChatWindow(props: {
               width={"212px"}
             >
               <option value="tavily">Tavily</option>
-              <option value="kay">Kay.ai SEC Filings</option>
-              <option value="kay_press_release">Kay.ai Press Releases</option>
-              <option value="you">You.com</option>
-              <option value="google">Google</option>
             </Select>
           </div>
           <div className="flex items-center mb-2">
@@ -282,9 +266,21 @@ export function ChatWindow(props: {
               }}
               width={"212px"}
             >
-              <option value="openai">GPT-3.5-Turbo</option>
-              <option value="anthropic">Claude-2</option>
-              <option value="googlevertex">Google Vertex AI</option>
+              <option value="Tongyi Qwen-plus">Tongyi Qwen-plus</option>
+            </Select>
+          </div>
+          <div className="flex items-center mb-2">
+            <span className="shrink-0 mr-2">Mode</span>
+            <Select
+              value={modename}
+              onChange={(e) => {
+                insertUrlParam("mode", e.target.value);
+                setMode(e.target.value as ModeName);
+              }}
+              width={"212px"}
+            >
+              <option value="online">online</option>
+              <option value="local">local</option>
             </Select>
           </div>
         </div>
@@ -383,7 +379,7 @@ export function ChatWindow(props: {
       {messages.length === 0 ? (
         <footer className="flex justify-center absolute bottom-8">
           <a
-            href="https://github.com/langchain-ai/weblangchain"
+            href="https://github.com/leosfan/rag"
             target="_blank"
             className="text-white flex items-center"
           >
